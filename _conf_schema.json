@@ -1,0 +1,63 @@
+{
+    "deepseek_api_key": {
+        "description": "DeepSeek 官方 API Key",
+        "type": "string",
+        "hint": "用于 Search / Fetch API（各 $0.75 / 千次成功请求），必填",
+        "obvious_hint": true
+    },
+    "subagent_provider": {
+        "description": "子代理使用的 Codex provider",
+        "type": "string",
+        "default": "",
+        "hint": "填 Codex runner 里 WebUI 管理的 provider ID（或名称）。留空：优先用 base_url 为 api.deepseek.com 的 provider，没有则用 runner 当前的 provider 和模型"
+    },
+    "subagent_model": {
+        "description": "子代理模型",
+        "type": "string",
+        "default": "",
+        "hint": "留空：用所选 provider 列出的第一个模型"
+    },
+    "subagent_reasoning_effort": {
+        "description": "子代理推理强度",
+        "type": "string",
+        "default": "",
+        "hint": "留空用模型默认值；如 low / medium / high"
+    },
+    "time_budget_s": {
+        "description": "单次调研时间预算（秒）",
+        "type": "int",
+        "default": 600,
+        "hint": "实际预算还受 Codex runner 的 tool_call_timeout 限制（减 15 秒余量），用掉 75% 后子代理被要求收尾"
+    },
+    "max_tool_calls": {
+        "description": "单次调研最多工具调用次数",
+        "type": "int",
+        "default": 30
+    },
+    "search_count": {
+        "description": "每次搜索默认返回条数（1-20）",
+        "type": "int",
+        "default": 8
+    },
+    "fetch_window_chars": {
+        "description": "抓取网页时一次返回给子代理的字符数",
+        "type": "int",
+        "default": 6000
+    },
+    "result_max_chars": {
+        "description": "返回给主 agent 的报告最大字符数",
+        "type": "int",
+        "default": 8000,
+        "hint": "完整报告另存于沙箱 /tmp/ds_research/<task_id>/report.md"
+    },
+    "deepseek_base_url": {
+        "description": "DeepSeek API 地址",
+        "type": "string",
+        "default": "https://api.deepseek.com"
+    },
+    "proxy": {
+        "description": "访问 DeepSeek API 的 HTTP 代理",
+        "type": "string",
+        "default": ""
+    }
+}
