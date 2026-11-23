@@ -39,17 +39,15 @@ AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工�
 
 ## 时间预算
 
-在 Codex runner 下，插件工具受 runner 的 `tool_call_timeout` 限制（默认 120 秒），超时会被取消。所以实际预算是：
+预算按插件的 `time_budget_s`（默认 600 秒，不少于 30 秒）计算。
 
-```
-min(time_budget_s, tool_call_timeout - 15)，且不少于 30 秒
-```
+AstrBot 有工具任务（`astrbot.core.tools.tool_tasks`）时，Codex runner 的 `tool_call_timeout` 只是到时提醒主 agent：工具转到后台继续跑，主 agent 用 `astrbot_tool_task` 选择等待、查看状态或取消。所以预算不受它限制。
+
+较旧的 AstrBot 会在 `tool_call_timeout`（默认 120 秒）时取消工具调用，报告会丢失。这种情况下实际预算是 `min(time_budget_s, tool_call_timeout - 15)`。
 
 预算用掉 75% 后，插件会向子线程 steer 一条"停止调用工具、立即写报告"的消息，之后的工具调用一律拒绝。到 100% 还没写完就 interrupt，只返回已有的部分结果（执行过的搜索和读过的网页）。工具调用次数超过 `max_tool_calls` 后同样拒绝。
 
-想做更深的调研，就调大 runner 的 `tool_call_timeout`。
-
-无论被取消（超时或用户停止）还是出错，子线程都会被 interrupt 并卸载。
+无论被取消（主 agent 取消工具任务、用户 /stop，或旧版 AstrBot 超时）还是出错，子线程都会被 interrupt 并卸载。
 
 ## 模型
 

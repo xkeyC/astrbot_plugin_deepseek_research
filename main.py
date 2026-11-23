@@ -19,7 +19,8 @@ from .research import (
     parse_time_range,
 )
 
-# Seconds the subagent leaves before AstrBot's tool_call_timeout cancels it.
+# Seconds the subagent leaves before an older AstrBot's tool_call_timeout
+# cancels it.
 TIMEOUT_MARGIN_S = 15
 MIN_BUDGET_S = 30
 
@@ -145,13 +146,16 @@ class DeepSeekResearchPlugin(Star):
             provider, model = self._subagent_model(runner_cfg)
         except ValueError as e:
             return f"deepseek_research 配置有误：{e}"
-        # The tool runs inside AstrBot's tool_call_timeout; past it the call is
-        # cancelled and the report lost, so the subagent wraps up before.
-        timeout = int(runner_cfg.get("tool_call_timeout") or 120)
-        budget = min(
-            float(self.config.get("time_budget_s") or 600),
-            float(timeout - TIMEOUT_MARGIN_S),
-        )
+        budget = float(self.config.get("time_budget_s") or 600)
+        try:
+            # AstrBot with tool tasks only reminds the model at
+            # tool_call_timeout and lets the tool run on.
+            import astrbot.core.tools.tool_tasks  # noqa: F401
+        except ImportError:
+            # Older AstrBot cancels the call at tool_call_timeout and the report
+            # is lost, so the subagent wraps up before.
+            timeout = int(runner_cfg.get("tool_call_timeout") or 120)
+            budget = min(budget, float(timeout - TIMEOUT_MARGIN_S))
         budget = max(float(MIN_BUDGET_S), budget)
 
         task_id = new_task_id()

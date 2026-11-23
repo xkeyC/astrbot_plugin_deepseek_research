@@ -27,7 +27,7 @@
         "description": "单次调研时间预算（秒）",
         "type": "int",
         "default": 600,
-        "hint": "实际预算还受 Codex runner 的 tool_call_timeout 限制（减 15 秒余量），用掉 75% 后子代理被要求收尾"
+        "hint": "用掉 75% 后子代理被要求收尾，到 100% 返回部分结果。旧版 AstrBot（没有工具任务）还受 Codex runner 的 tool_call_timeout 限制，再减 15 秒余量"
     },
     "max_tool_calls": {
         "description": "单次调研最多工具调用次数",

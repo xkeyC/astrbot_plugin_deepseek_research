@@ -474,7 +474,26 @@ async def main():
     engine = next(iter(CodexEngine._instances.values()))
     check(not engine.pumps, "[timeout] thread released")
 
-    # Cancelled from outside (tool_call_timeout or a user stop).
+    # AstrBot with tool tasks: tool_call_timeout no longer caps the budget.
+    for v in LOG.values():
+        v.clear()
+    sys.modules["astrbot.core.tools.tool_tasks"] = type(sys)(
+        "astrbot.core.tools.tool_tasks"
+    )
+    plugin = plugin_main.DeepSeekResearchPlugin(
+        FakeContext(chat_cfg(port, "chat", 20)),
+        {**plugin_cfg, "max_tool_calls": 4, "time_budget_s": 38},
+    )
+    t0 = time.monotonic()
+    out = await run_tool(plugin, keywords="loop")
+    took = time.monotonic() - t0
+    del sys.modules["astrbot.core.tools.tool_tasks"]
+    check(
+        36 <= took <= 44,
+        f"[tool tasks] budget is time_budget_s, not tool_call_timeout ({took:.1f}s)",
+    )
+
+    # Cancelled from outside (the model cancels the tool task, or a user stop).
     SCENARIO.update(name="stubborn", delay=1.0)
     task = asyncio.create_task(run_tool(plugin, keywords="cancel me"))
     await asyncio.sleep(4)
