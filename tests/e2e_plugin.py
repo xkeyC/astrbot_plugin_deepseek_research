@@ -20,10 +20,9 @@ PLUGIN_PARENT, WORK = Path(sys.argv[1]), Path(sys.argv[2])
 sys.path.insert(0, str(PLUGIN_PARENT))
 WORK.mkdir(parents=True, exist_ok=True)
 
-import astrbot.core.computer.computer_client as cc  # noqa: E402
-from astrbot.core.agent.runners.codex.native import CodexEngine  # noqa: E402
-
-import astrbot_plugin_deepseek_research.main as plugin_main  # noqa: E402
+import astrbot.core.computer.computer_client as cc
+import astrbot_plugin_deepseek_research.main as plugin_main
+from astrbot.core.agent.runners.codex.native import CodexEngine
 
 SANDBOX_ROOT = str(WORK / "sandbox_tmp" / "ds_research")
 plugin_main.SANDBOX_ROOT = SANDBOX_ROOT
@@ -39,6 +38,40 @@ HAPPY = [
     ("deepseek_fetch", {"url": "https://www.youtube.com/watch?v=x"}),
     ("deepseek_fetch", {"url": "https://example.com/a", "offset": 10}),
     ("tmp_read", {"path": "../../escape.txt"}),
+    (
+        "apply_patch",
+        {
+            "patch": "*** Begin Patch\n*** Add File: notes.md\n+# Notes\n+- todo\n*** End Patch"
+        },
+    ),
+    (
+        "apply_patch",
+        {
+            "patch": "*** Begin Patch\n*** Update File: notes.md\n@@ # Notes\n-- todo\n+- found [1]\n"
+            "*** Add File: draft.md\n+draft\n*** End Patch"
+        },
+    ),
+    # A hunk that does not match: nothing of this patch may be written.
+    (
+        "apply_patch",
+        {
+            "patch": "*** Begin Patch\n*** Add File: should_not_exist.md\n+x\n"
+            "*** Update File: notes.md\n-no such line\n+y\n*** End Patch"
+        },
+    ),
+    (
+        "apply_patch",
+        {
+            "patch": "*** Begin Patch\n*** Update File: draft.md\n*** Move to: final/draft.md\n-draft\n+final\n*** End Patch"
+        },
+    ),
+    (
+        "apply_patch",
+        {
+            "patch": "*** Begin Patch\n*** Add File: ok_before_escape.md\n+x\n*** Add File: ../../escape.txt\n+x\n*** End Patch"
+        },
+    ),
+    ("tmp_read", {"path": "notes.md"}),
 ]
 FINAL = (
     "结论：测试通过 [1]。\n\n来源：\n[1] Page A - https://example.com/a (2025-01-01)"
@@ -310,8 +343,8 @@ async def main():
     }
     for wire in ("responses", "chat"):
         shutil.rmtree(WORK / "sandbox_tmp", ignore_errors=True)
-        for k in LOG:
-            LOG[k].clear()
+        for v in LOG.values():
+            v.clear()
         SCENARIO.update(name="happy", delay=0.0)
         plugin = plugin_main.DeepSeekResearchPlugin(
             FakeContext(chat_cfg(port, wire, 120)), plugin_cfg
@@ -326,11 +359,11 @@ async def main():
         )
         print(f"--- [{wire}] result ({time.monotonic() - t0:.1f}s):\n{out}\n---")
         want = [
+            "research.apply_patch",
             "research.deepseek_fetch",
             "research.deepseek_search",
             "research.tmp_list",
             "research.tmp_read",
-            "research.tmp_write",
         ]
         if wire == "chat":
             want = [w.replace(".", "__") for w in want]
@@ -375,8 +408,33 @@ async def main():
             else []
         )
         check(
-            files == ["pages/01-example.com.md", "report.md", "search/01.md"],
+            files
+            == [
+                "final/draft.md",
+                "notes.md",
+                "pages/01-example.com.md",
+                "report.md",
+                "search/01.md",
+            ],
             f"[{wire}] sandbox files {files}",
+        )
+        if dirs:
+            notes = (dirs[0] / "notes.md").read_text()
+            moved = (dirs[0] / "final/draft.md").read_text()
+            check(
+                notes == "# Notes\n- found [1]\n" and moved == "final\n",
+                f"[{wire}] patch results {notes!r} {moved!r}",
+            )
+        check(
+            any(
+                "could not locate hunk" in o and "nothing written" in o
+                for o in LOG["tool_outputs"]
+            ),
+            f"[{wire}] failed hunk reported, patch not applied",
+        )
+        check(
+            sum("outside the task directory" in o for o in LOG["tool_outputs"]) == 2,
+            f"[{wire}] read and patch outside the directory refused",
         )
         check(
             not (WORK / "sandbox_tmp" / "escape.txt").exists(),
@@ -390,8 +448,8 @@ async def main():
         check(not engine.pumps, f"[{wire}] no thread pump left ({list(engine.pumps)})")
 
     # Model that never stops: refused past max_tool_calls, cut at the hard deadline.
-    for k in LOG:
-        LOG[k].clear()
+    for v in LOG.values():
+        v.clear()
     SCENARIO.update(name="stubborn", delay=0.2)
     plugin = plugin_main.DeepSeekResearchPlugin(
         FakeContext(chat_cfg(port, "chat", 45)), {**plugin_cfg, "max_tool_calls": 4}

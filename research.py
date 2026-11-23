@@ -21,6 +21,11 @@ from urllib.parse import urlparse
 
 import aiohttp
 from astrbot.api import logger
+from astrbot.core.tools.computer_tools.apply_patch import (
+    PatchError,
+    apply_hunks,
+    parse_patch,
+)
 
 JsonObject = dict[str, Any]
 
@@ -32,6 +37,8 @@ MAX_QUERY_CHARS = 128
 # Pages are kept whole up to this size, in memory and in the sandbox.
 MAX_PAGE_CHARS = 300_000
 MAX_READ_CHARS = 12_000
+# A file apply_patch may edit: it is read and rewritten whole.
+MAX_PATCH_FILE_CHARS = 1_000_000
 # Statuses DeepSeek asks clients to retry after a pause.
 RETRY_STATUSES = (408, 429, 500, 502, 503, 504)
 # The rest of the budget after this share is for writing the report.
@@ -61,9 +68,10 @@ Tools:
 in total. The task's time range is applied unless you pass after/before yourself.
 - research.deepseek_fetch: read one page as Markdown. Long pages come in windows; pass \
 offset to read on.
-- research.tmp_read / tmp_write / tmp_list (only when offered): files in your task \
-directory. Search results' full text and fetched pages are saved there; use notes.md for \
-notes on long tasks.
+- research.tmp_read / tmp_list / apply_patch (only when offered): files in your task \
+directory, paths relative to it. Search results' full text and fetched pages are saved \
+there. apply_patch takes a Codex-style patch (*** Add File / *** Update File / \
+*** Delete File); keep notes for long tasks in notes.md with it.
 
 Known limits of DeepSeek's index and fetcher:
 - YouTube, Reddit, X/Twitter and Medium are neither indexed nor fetchable. Look for \
@@ -179,9 +187,14 @@ def _dsr_op(req):
     op = req["op"]
     if op == "write":
         _os.makedirs(_os.path.dirname(path), exist_ok=True)
-        with open(path, "a" if req.get("append") else "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(req["content"])
         return {"ok": True, "size": _os.path.getsize(path)}
+    if op == "delete":
+        if not _os.path.isfile(path):
+            return {"ok": False, "error": "no such file"}
+        _os.remove(path)
+        return {"ok": True}
     if op == "read":
         if not _os.path.isfile(path):
             return {"ok": False, "error": "no such file"}
@@ -338,16 +351,17 @@ def dynamic_tools(with_files: bool) -> list[JsonObject]:
                 ),
             },
             {
-                "name": "tmp_write",
-                "description": "Write (or append to) a text file of the task "
-                "directory.",
+                "name": "apply_patch",
+                "description": (
+                    "Create, edit or delete files of the task directory with a "
+                    "Codex-style patch (*** Begin Patch / *** Add File: / "
+                    "*** Update File: / *** Move to: / *** Delete File: / @@ hunks / "
+                    "*** End Patch). Paths are relative to the task directory. All "
+                    "hunks must apply or nothing is written."
+                ),
                 "inputSchema": _schema(
-                    {
-                        "path": {"type": "string", "description": "Relative path."},
-                        "content": {"type": "string"},
-                        "append": {"type": "boolean"},
-                    },
-                    ["path", "content"],
+                    {"patch": {"type": "string", "description": "The full patch."}},
+                    ["patch"],
                 ),
             },
             {
@@ -438,8 +452,8 @@ class ResearchTask:
                 return _text_result(await self._fetch(args))
             if self.sandbox is not None and name in (
                 "tmp_read",
-                "tmp_write",
                 "tmp_list",
+                "apply_patch",
             ):
                 return await self._files(name, args)
             return _text_result(f"error: unknown tool {name}", False)
@@ -574,15 +588,8 @@ class ResearchTask:
                         f"{path}: {len(res['text'])} of {res['total']} chars\n\n"
                         f"{res['text']}"
                     )
-            elif name == "tmp_write":
-                res = await self.sandbox.op(
-                    "write",
-                    path,
-                    content=str(args.get("content") or ""),
-                    append=bool(args.get("append")),
-                )
-                if res.get("ok"):
-                    return _text_result(f"wrote {path} ({res['size']} bytes)")
+            elif name == "apply_patch":
+                return await self._apply_patch(str(args.get("patch") or ""))
             else:
                 res = await self.sandbox.op("list", path)
                 if res.get("ok"):
@@ -593,6 +600,80 @@ class ResearchTask:
         except Exception as e:  # noqa: BLE001 - a sandbox failure is the tool's result
             return _text_result(f"error: sandbox unavailable: {e!s}", False)
         return _text_result(f"error: {res.get('error')}", False)
+
+    async def _apply_patch(self, patch: str) -> JsonObject:
+        """Apply a Codex-style patch to the task directory, all or nothing.
+
+        Every file's new content is worked out first (later operations on a
+        file see the earlier ones), and only then written, so a hunk that does
+        not apply leaves every file as it was.
+        """
+        try:
+            ops = parse_patch(patch)
+        except PatchError as e:
+            return _text_result(f"error: invalid patch: {e}", False)
+        # Refused before anything is written; the sandbox checks again after
+        # resolving links.
+        base = self.sandbox.base.rstrip("/") + "/"
+        for path in [p for op in ops for p in (op.path, op.move_to) if p]:
+            if ".." in path.split("/") or (
+                path.startswith("/") and not path.startswith(base)
+            ):
+                return _text_result(
+                    f"error: {path}: path is outside the task directory; nothing written",
+                    False,
+                )
+        # path -> new content, or None to delete it; in patch order.
+        pending: dict[str, str | None] = {}
+        done: list[str] = []
+        for op in ops:
+            if op.kind == "add":
+                pending[op.path] = "\n".join(op.add_lines) + "\n"
+                done.append(f"A {op.path}")
+                continue
+            if op.kind == "delete":
+                pending[op.path] = None
+                done.append(f"D {op.path}")
+                continue
+            if op.path in pending:
+                content = pending[op.path]
+                if content is None:
+                    return _text_result(f"error: {op.path} is deleted above", False)
+            else:
+                res = await self.sandbox.op(
+                    "read", op.path, limit=MAX_PATCH_FILE_CHARS + 1
+                )
+                if not res.get("ok"):
+                    return _text_result(
+                        f"error: cannot read {op.path}: {res.get('error')}", False
+                    )
+                if res["total"] > MAX_PATCH_FILE_CHARS:
+                    return _text_result(
+                        f"error: {op.path} is too large to patch", False
+                    )
+                content = res["text"]
+            try:
+                new = apply_hunks(content, op.hunks)
+            except PatchError as e:
+                return _text_result(f"error: {op.path}: {e}; nothing written", False)
+            target = op.move_to or op.path
+            if target != op.path:
+                pending[op.path] = None
+            pending[target] = new
+            done.append(f"M {op.path}" + (f" -> {target}" if target != op.path else ""))
+        written: list[str] = []
+        for path, content in pending.items():
+            res = await self.sandbox.op(
+                "write" if content is not None else "delete",
+                path,
+                **({"content": content} if content is not None else {}),
+            )
+            if not res.get("ok"):
+                note = f" (already applied: {', '.join(written)})" if written else ""
+                return _text_result(f"error: {path}: {res.get('error')}{note}", False)
+            written.append(path)
+        self.saved_files += 1
+        return _text_result("Patch applied:\n" + "\n".join(done))
 
     # -------------------------------------------------------------------- run
 

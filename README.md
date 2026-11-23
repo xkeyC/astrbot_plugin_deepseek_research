@@ -26,11 +26,14 @@ AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工�
 
 - `research.deepseek_search`：Search API，支持 `site:`、`lang:`、`after:`、`before:` 等运算符，查询加运算符最长 128 字。`need_content` 时把结果正文存进沙箱；
 - `research.deepseek_fetch`：Fetch API，长网页按窗口分段读取，同一页只抓一次；
-- `research.tmp_read` / `tmp_write` / `tmp_list`：只能读写沙箱里的 `/tmp/ds_research/<task_id>/`。路径在沙箱内解析，越界直接拒绝。
+- `research.tmp_read` / `tmp_list`：读取、列出沙箱里 `/tmp/ds_research/<task_id>/` 下的文件；
+- `research.apply_patch`：Codex 风格的 patch（`*** Add File` / `*** Update File` / `*** Move to` / `*** Delete File` / `@@` hunk），用来新建、修改、删除任务目录里的文件。解析和 hunk 匹配复用 AstrBot 内置 `apply_patch` 的实现。整个 patch 先全部算完再落盘：任何一个 hunk 匹配失败，或者任何一个路径越界，都一个文件也不写。
+
+路径先在宿主侧检查（拒绝 `..` 和目录外的绝对路径），落盘时再在沙箱内解析符号链接后检查一次，越界直接拒绝。
 
 在 codex 348075fad 上用 Responses 和 chat 两种 wire 实测过：模型收到的 tools 只有上面 5 个。`view_image` 即使在 `no_environment` 下也要单独关掉才会消失。
 
-沙箱文件通过 Shipyard 的 Python 执行器读写，因为它的文件 API 只能访问 `/workspace`。执行的代码由插件固定写死，请求内容用 base64 传入，模型拿不到执行能力。会话没有启用 sandbox 运行时的话，不提供 `tmp_*` 工具，网页只在内存里分段读。
+沙箱文件通过 Shipyard 的 Python 执行器读写，因为它的文件 API 只能访问 `/workspace`。执行的代码由插件固定写死，请求内容用 base64 传入，模型拿不到执行能力。会话没有启用 sandbox 运行时的话，不提供文件工具（`tmp_*`、`apply_patch`），网页只在内存里分段读。
 
 材料目录：`report.md`（完整报告）、`search/NN.md`（第 N 次搜索的结果正文）、`pages/NN-<host>.md`（抓取的网页）。主 agent 可以用自己的沙箱工具读这些文件。
 
