@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiohttp import web
 
@@ -280,6 +281,10 @@ cc.get_booter = fake_get_booter
 class FakeContext:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.tools = []
+
+    def add_llm_tools(self, *tools):
+        self.tools.extend(tools)
 
     def get_config(self, umo=None):
         return self.cfg
@@ -314,8 +319,15 @@ def chat_cfg(port, wire, tool_call_timeout):
     }
 
 
-async def run_tool(plugin, **kw):
-    return await plugin.deepseek_research(FakeEvent(), **kw)
+async def run_tool(plugin, *, timeout=120, tool_tasks=False, **kw):
+    """Calls the plugin's tool as AstrBot's executor would."""
+    [tool] = [t for t in plugin.context.tools if t.name == "deepseek_research"]
+    run_context = SimpleNamespace(
+        context=SimpleNamespace(event=FakeEvent()),
+        tool_call_timeout=timeout,
+        tool_tasks=tool_tasks,
+    )
+    return await tool.call(run_context, **kw)
 
 
 async def main():
@@ -446,8 +458,10 @@ async def main():
         )
         engine = next(iter(CodexEngine._instances.values()))
         check(not engine.pumps, f"[{wire}] no thread pump left ({list(engine.pumps)})")
+        await plugin.terminate()
 
     # Model that never stops: refused past max_tool_calls, cut at the hard deadline.
+    # The run cancels at tool_call_timeout (no tool tasks): the budget stays under it.
     for v in LOG.values():
         v.clear()
     SCENARIO.update(name="stubborn", delay=0.2)
@@ -455,7 +469,7 @@ async def main():
         FakeContext(chat_cfg(port, "chat", 45)), {**plugin_cfg, "max_tool_calls": 4}
     )
     t0 = time.monotonic()
-    out = await run_tool(plugin, keywords="loop")
+    out = await run_tool(plugin, keywords="loop", timeout=45)
     took = time.monotonic() - t0
     print(f"--- [timeout] result ({took:.1f}s):\n{out}\n---")
     check(28 <= took <= 36, f"[timeout] ends at the 30 s budget ({took:.1f}s)")
@@ -477,17 +491,14 @@ async def main():
     # AstrBot with tool tasks: tool_call_timeout no longer caps the budget.
     for v in LOG.values():
         v.clear()
-    sys.modules["astrbot.core.tools.tool_tasks"] = type(sys)(
-        "astrbot.core.tools.tool_tasks"
-    )
+    await plugin.terminate()
     plugin = plugin_main.DeepSeekResearchPlugin(
         FakeContext(chat_cfg(port, "chat", 20)),
         {**plugin_cfg, "max_tool_calls": 4, "time_budget_s": 38},
     )
     t0 = time.monotonic()
-    out = await run_tool(plugin, keywords="loop")
+    out = await run_tool(plugin, keywords="loop", timeout=20, tool_tasks=True)
     took = time.monotonic() - t0
-    del sys.modules["astrbot.core.tools.tool_tasks"]
     check(
         36 <= took <= 44,
         f"[tool tasks] budget is time_budget_s, not tool_call_timeout ({took:.1f}s)",
@@ -495,7 +506,7 @@ async def main():
 
     # Cancelled from outside (the model cancels the tool task, or a user stop).
     SCENARIO.update(name="stubborn", delay=1.0)
-    task = asyncio.create_task(run_tool(plugin, keywords="cancel me"))
+    task = asyncio.create_task(run_tool(plugin, keywords="cancel me", tool_tasks=True))
     await asyncio.sleep(4)
     loaded = list(engine.pumps)
     task.cancel()

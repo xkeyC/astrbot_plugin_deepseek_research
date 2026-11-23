@@ -4,10 +4,12 @@ Search and Fetch APIs."""
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 
-from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api import FunctionTool, logger
+from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 
 from .research import (
@@ -19,10 +21,71 @@ from .research import (
     parse_time_range,
 )
 
-# Seconds the subagent leaves before an older AstrBot's tool_call_timeout
-# cancels it.
+# Seconds the subagent leaves before a tool_call_timeout that cancels it.
 TIMEOUT_MARGIN_S = 15
 MIN_BUDGET_S = 30
+
+
+@dataclass
+class DeepSeekResearchTool(FunctionTool):
+    """``deepseek_research``. A FunctionTool rather than an ``llm_tool``
+    handler: only ``call`` gets the run context, which says whether this run
+    cancels a tool at its timeout."""
+
+    name: str = "deepseek_research"
+    description: str = (
+        "Research a topic on the web and return a cited report. A subagent "
+        "searches and reads pages with DeepSeek's search engine (good Chinese "
+        "coverage, incl. Tieba, Bilibili, Weibo, Zhihu summaries) and writes the "
+        "report; its raw material stays in the sandbox under /tmp/ds_research/. "
+        "It cannot reach YouTube, Reddit, X/Twitter or Medium. Takes tens of "
+        "seconds to minutes."
+    )
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "keywords": {
+                    "type": "string",
+                    "description": "What to research: keywords or a short topic.",
+                },
+                "instruction": {
+                    "type": "string",
+                    "description": "What the report should answer or contain, its "
+                    "focus and format.",
+                },
+                "time_range": {
+                    "type": "string",
+                    "description": "Optional. Publication time to search: 7d / 2w / "
+                    "3m / 1y (until today), a date such as 2025 or 2025-06-01 (from "
+                    "then on), or A..B such as 2025-01-01..2025-06-30.",
+                },
+                "priority_urls": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional. URLs the subagent reads first.",
+                },
+            },
+            "required": ["keywords"],
+        }
+    )
+    plugin: Any = None
+
+    async def call(self, context: Any, **kwargs: Any) -> str:
+        # Runs that offer astrbot_tool_task keep a tool past its timeout and
+        # let the model decide; every other run (an older AstrBot, a plugin's
+        # tool_loop_agent, a background task) cancels it there.
+        timeout = None
+        if getattr(context, "tool_tasks", False) is not True:
+            timeout = int(getattr(context, "tool_call_timeout", 0) or 120)
+        return await self.plugin.research(
+            context.context.event,
+            cancel_after_s=timeout,
+            keywords=str(kwargs.get("keywords") or ""),
+            instruction=str(kwargs.get("instruction") or ""),
+            time_range=str(kwargs.get("time_range") or ""),
+            priority_urls=kwargs.get("priority_urls"),
+        )
 
 
 def _provider_id(raw: object) -> str:
@@ -45,6 +108,7 @@ class DeepSeekResearchPlugin(Star):
             str(config.get("deepseek_base_url") or "https://api.deepseek.com"),
             str(config.get("proxy") or "").strip(),
         )
+        self.context.add_llm_tools(DeepSeekResearchTool(plugin=self))
 
     async def terminate(self) -> None:
         await self.client.close()
@@ -106,22 +170,29 @@ class DeepSeekResearchPlugin(Star):
             )
         return _provider_id(match.get("id")), model
 
-    @filter.llm_tool(name="deepseek_research")
-    async def deepseek_research(
+    async def research(
         self,
         event: AstrMessageEvent,
+        *,
+        cancel_after_s: int | None,
         keywords: str,
         instruction: str = "",
         time_range: str = "",
         priority_urls: list[str] | None = None,
     ) -> str:
-        """Research a topic on the web and return a cited report. A subagent searches and reads pages with DeepSeek's search engine (good Chinese coverage, incl. Tieba, Bilibili, Weibo, Zhihu summaries) and writes the report; its raw material stays in the sandbox under /tmp/ds_research/. It cannot reach YouTube, Reddit, X/Twitter or Medium. Takes tens of seconds to minutes.
+        """Run one research task for ``deepseek_research``.
 
         Args:
-            keywords(string): What to research: keywords or a short topic.
-            instruction(string): What the report should answer or contain, its focus and format.
-            time_range(string): Optional. Publication time to search: 7d / 2w / 3m / 1y (until today), a date such as 2025 or 2025-06-01 (from then on), or A..B such as 2025-01-01..2025-06-30.
-            priority_urls(array[string]): Optional. URLs the subagent reads first.
+            event: The message event the tool call belongs to.
+            cancel_after_s: The tool_call_timeout that cancels this call, or
+                None when the run keeps it going past that (tool tasks).
+            keywords: What to research.
+            instruction: What the report should answer.
+            time_range: The publication time range, see ``parse_time_range``.
+            priority_urls: URLs to read first.
+
+        Returns:
+            The report, or why there is none.
         """
         if not self.client.api_key:
             return "deepseek_research 未配置 DeepSeek API key。"
@@ -147,15 +218,9 @@ class DeepSeekResearchPlugin(Star):
         except ValueError as e:
             return f"deepseek_research 配置有误：{e}"
         budget = float(self.config.get("time_budget_s") or 600)
-        try:
-            # AstrBot with tool tasks only reminds the model at
-            # tool_call_timeout and lets the tool run on.
-            import astrbot.core.tools.tool_tasks  # noqa: F401
-        except ImportError:
-            # Older AstrBot cancels the call at tool_call_timeout and the report
-            # is lost, so the subagent wraps up before.
-            timeout = int(runner_cfg.get("tool_call_timeout") or 120)
-            budget = min(budget, float(timeout - TIMEOUT_MARGIN_S))
+        if cancel_after_s is not None:
+            # Cancelled there, the report would be lost: wrap up before.
+            budget = min(budget, float(cancel_after_s - TIMEOUT_MARGIN_S))
         budget = max(float(MIN_BUDGET_S), budget)
 
         task_id = new_task_id()

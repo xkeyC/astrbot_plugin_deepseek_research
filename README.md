@@ -39,15 +39,18 @@ AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工�
 
 ## 时间预算
 
-预算按插件的 `time_budget_s`（默认 600 秒，不少于 30 秒）计算。
+预算按插件的 `time_budget_s`（默认 600 秒，不少于 30 秒）计算，只看这一次调用所在的运行：
 
-AstrBot 有工具任务（`astrbot.core.tools.tool_tasks`）时，Codex runner 的 `tool_call_timeout` 只是到时提醒主 agent：工具转到后台继续跑，主 agent 用 `astrbot_tool_task` 选择等待、查看状态或取消。所以预算不受它限制。
+- **这次运行提供 `astrbot_tool_task`**（目前是 Codex 主聊天请求）：`tool_call_timeout` 只是到时提醒主 agent。工具转到后台继续跑，主 agent 用 `astrbot_tool_task` 选择等待、查看状态或取消。预算就是 `time_budget_s`。
+- **其他运行**（较旧的 AstrBot、别的插件在 `tool_loop_agent` 里调用、后台任务）：工具会在 `tool_call_timeout` 时被取消，报告会丢失。这时预算是 `min(time_budget_s, tool_call_timeout - 15)`。
 
-较旧的 AstrBot 会在 `tool_call_timeout`（默认 120 秒）时取消工具调用，报告会丢失。这种情况下实际预算是 `min(time_budget_s, tool_call_timeout - 15)`。
+插件在运行时从工具的 run context 读 `tool_tasks` 和 `tool_call_timeout` 来判断，所以工具是用 `FunctionTool` 子类注册的，没有用 `llm_tool` 装饰器。
 
 预算用掉 75% 后，插件会向子线程 steer 一条"停止调用工具、立即写报告"的消息，之后的工具调用一律拒绝。到 100% 还没写完就 interrupt，只返回已有的部分结果（执行过的搜索和读过的网页）。工具调用次数超过 `max_tool_calls` 后同样拒绝。
 
-无论被取消（主 agent 取消工具任务、用户 /stop，或旧版 AstrBot 超时）还是出错，子线程都会被 interrupt 并卸载。
+无论被取消（主 agent 取消工具任务、用户 /stop，或在会取消的运行里超时）还是出错，子线程都会被 interrupt 并卸载。
+
+在 code mode 里调用（`exec`，或开源模型模式下的 `run_code`）时，程序到 yield 时限就先把控制权交回主 agent，工具调用在后台继续；主 agent 之后用 `wait` 取结果。
 
 ## 模型
 
