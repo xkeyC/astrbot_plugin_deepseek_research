@@ -34,12 +34,13 @@ class DeepSeekResearchTool(FunctionTool):
 
     name: str = "deepseek_research"
     description: str = (
-        "Research a topic on the web and return a cited report. A subagent "
-        "searches and reads pages with DeepSeek's search engine (good Chinese "
-        "coverage, incl. Tieba, Bilibili, Weibo, Zhihu summaries) and writes the "
-        "report; its raw material stays in the sandbox under /tmp/ds_research/. "
-        "It cannot reach YouTube, Reddit, X/Twitter or Medium. Takes tens of "
-        "seconds to minutes."
+        "Research information published mostly in Chinese (Chinese sites and "
+        "news, Tieba, Bilibili, Weibo, Zhihu summaries, Chinese communities) and "
+        "return a cited report. For any other research use openai_research "
+        "first: it is faster. A subagent searches and reads pages with DeepSeek's "
+        "search engine and writes the report; its raw material stays in the "
+        "sandbox under /tmp/ds_research/. It cannot reach YouTube, Reddit, "
+        "X/Twitter or Medium. Takes one to several minutes."
     )
     parameters: dict = field(
         default_factory=lambda: {
