@@ -187,8 +187,11 @@ class DeepSeekTools:
             DeepSeekError: A non-200 answer that retrying did not fix.
         """
         if self._session is None or self._session.closed:
+            # AstrBot puts its proxy setting (http_proxy / no_proxy) in the
+            # environment; trust_env follows it. The plugin's own proxy, when
+            # set, is passed per request and wins.
             self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=90)
+                timeout=aiohttp.ClientTimeout(total=90), trust_env=True
             )
         url = f"{self.base_url}/v1/tools/{endpoint}"
         headers = {"Authorization": f"Bearer {self.api_key}"}

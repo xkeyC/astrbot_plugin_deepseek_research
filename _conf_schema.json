@@ -39,8 +39,9 @@
         "default": "https://api.deepseek.com"
     },
     "proxy": {
-        "description": "访问 DeepSeek API 的 HTTP 代理",
+        "description": "访问 DeepSeek API 的 HTTP 代理（覆盖 AstrBot 代理）",
         "type": "string",
-        "default": ""
+        "default": "",
+        "hint": "留空：跟随 AstrBot 的代理设置（http_proxy / no_proxy）；填了就用这里的，如 http://127.0.0.1:7890"
     }
 }
