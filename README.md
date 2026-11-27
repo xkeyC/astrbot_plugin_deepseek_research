@@ -1,6 +1,6 @@
 # astrbot_plugin_deepseek_research
 
-AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工具，用于调研中文为主的信息（中文网站和新闻、贴吧、B 站、微博、知乎、中文社区）；其他调研优先用更快的 [openai_research](https://github.com/xkeyC/astrbot_plugin_openai_research)，工具描述里写明了这个分工。调用后会起一个**受限的 Codex 子代理**，用 DeepSeek 官方的 [Search / Fetch API](https://api-docs.deepseek.com/guides/search/) 做联网调研，返回带引用的报告。
+AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工具，作为后备：只有 [openai_research](https://github.com/xkeyC/astrbot_plugin_openai_research) 查不到的中文信息（中文网站和新闻、贴吧、B 站、微博、知乎）才用它，其余调研（包括中文主题）都先用更快的 openai_research。工具描述里写明了这个分工。调用后会起一个**受限的 Codex 子代理**，用 DeepSeek 官方的 [Search / Fetch API](https://api-docs.deepseek.com/guides/search/) 做联网调研，返回带引用的报告。
 
 ## 工具
 
