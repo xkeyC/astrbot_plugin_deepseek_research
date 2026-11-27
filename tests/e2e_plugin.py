@@ -24,6 +24,7 @@ WORK.mkdir(parents=True, exist_ok=True)
 import astrbot.core.computer.computer_client as cc
 import astrbot_plugin_deepseek_research.main as plugin_main
 from astrbot.core.agent.runners.codex.native import CodexEngine
+from astrbot_plugin_deepseek_research import research
 
 SANDBOX_ROOT = str(WORK / "sandbox_tmp" / "ds_research")
 plugin_main.SANDBOX_ROOT = SANDBOX_ROOT
@@ -31,48 +32,50 @@ plugin_main.SANDBOX_ROOT = SANDBOX_ROOT
 LOG = {"ds": [], "llm_tools": [], "llm_inputs": [], "tool_outputs": []}
 SCENARIO = {"name": "happy", "delay": 0.0}
 
+# One program does the whole research step, as the subagent's prompt asks;
+# typed TypeScript, which run_code checks before it runs.
+PROGRAM = r"""
+interface Page { title: string; url: string; chars: number; saved: string | null; content: string }
+const call = async (name: string, args: object) => JSON.parse((await tools[name](args)).text);
+const page: Page = await call("research__deepseek_fetch", { url: "https://example.com/a" });
+const [found, blocked] = await Promise.all([
+  call("research__deepseek_search", { query: "测试 关键词", sites: ["tieba.baidu.com"] }),
+  call("research__deepseek_fetch", { url: "https://www.youtube.com/watch?v=x" }),
+]);
+const again: Page = await call("research__deepseek_fetch", { url: "https://example.com/a" });
+const escape = await call("research__tmp_read", { path: "../../escape.txt" });
+const at = page.content.indexOf("页面");
+await tools.research__tmp_write({
+  path: "materials.md",
+  content: `## ${page.title}\n${page.url}\n\n${page.content.slice(at, at + 8)}`,
+});
+const patched = await call("research__apply_patch", {
+  patch: "*** Begin Patch\n*** Add File: notes.md\n+# Notes\n+- found [1]\n*** End Patch",
+});
+const refused = await call("research__apply_patch", {
+  patch: "*** Begin Patch\n*** Add File: ../../escape.txt\n+x\n*** End Patch",
+});
+const list = await call("research__tmp_list", {});
+const back = await call("research__tmp_read", { path: "materials.md" });
+text(JSON.stringify({
+  saved: [page.saved, found.saved],
+  files: list.files.map((f: [string, number]) => f[0]),
+  results: found.results.length,
+  content: found.results[0].content.length,
+  blocked: blocked.error,
+  cached: again.chars === page.chars,
+  escape: escape.error,
+  back: back.text,
+  patched: patched.applied,
+  refused: refused.error,
+}));
+"""
+# The example program of the subagent's prompt must pass run_code's check.
+EXAMPLE = research.SUBAGENT_PROMPT.split("```\n", 2)[1].split("```")[0]
+EXAMPLE = EXAMPLE.replace("{{", "{").replace("}}", "}")
 HAPPY = [
-    ("deepseek_fetch", {"url": "https://example.com/a"}),
-    ("deepseek_search", {"query": "测试 关键词", "sites": ["tieba.baidu.com"]}),
-    ("tmp_list", {}),
-    ("tmp_read", {"path": "search/01.md", "limit": 200}),
-    ("deepseek_fetch", {"url": "https://www.youtube.com/watch?v=x"}),
-    ("deepseek_fetch", {"url": "https://example.com/a", "offset": 10}),
-    ("tmp_read", {"path": "../../escape.txt"}),
-    (
-        "apply_patch",
-        {
-            "patch": "*** Begin Patch\n*** Add File: notes.md\n+# Notes\n+- todo\n*** End Patch"
-        },
-    ),
-    (
-        "apply_patch",
-        {
-            "patch": "*** Begin Patch\n*** Update File: notes.md\n@@ # Notes\n-- todo\n+- found [1]\n"
-            "*** Add File: draft.md\n+draft\n*** End Patch"
-        },
-    ),
-    # A hunk that does not match: nothing of this patch may be written.
-    (
-        "apply_patch",
-        {
-            "patch": "*** Begin Patch\n*** Add File: should_not_exist.md\n+x\n"
-            "*** Update File: notes.md\n-no such line\n+y\n*** End Patch"
-        },
-    ),
-    (
-        "apply_patch",
-        {
-            "patch": "*** Begin Patch\n*** Update File: draft.md\n*** Move to: final/draft.md\n-draft\n+final\n*** End Patch"
-        },
-    ),
-    (
-        "apply_patch",
-        {
-            "patch": "*** Begin Patch\n*** Add File: ok_before_escape.md\n+x\n*** Add File: ../../escape.txt\n+x\n*** End Patch"
-        },
-    ),
-    ("tmp_read", {"path": "notes.md"}),
+    ("run_code", {"code": PROGRAM, "description": "Research the topic"}),
+    ("run_code", {"code": EXAMPLE, "description": "Run the prompt's example"}),
 ]
 FINAL = (
     "结论：测试通过 [1]。\n\n来源：\n[1] Page A - https://example.com/a (2025-01-01)"
@@ -86,7 +89,11 @@ def brain(n_outputs: int, last_output: str):
         if n_outputs < len(HAPPY):
             return HAPPY[n_outputs]
         return FINAL
-    return ("deepseek_search", {"query": f"loop {n_outputs}"})
+    program = (
+        "const r = await tools.research__deepseek_search({ query: "
+        f'"loop {n_outputs}" }});\ntext(r.text.slice(0, 200));'
+    )
+    return ("run_code", {"code": program, "description": "Search again"})
 
 
 # ------------------------------------------------------------- mock LLM wires
@@ -111,7 +118,10 @@ async def responses(req):
     items = body.get("input") or []
     LOG["llm_inputs"].append(json.dumps(items, ensure_ascii=False))
     outs = [i for i in items if i.get("type") == "function_call_output"]
-    last = str(outs[-1].get("output")) if outs else ""
+    last = outs[-1].get("output") if outs else ""
+    if isinstance(last, list):
+        last = "\n".join(str(p.get("text") or "") for p in last)
+    last = str(last)
     await asyncio.sleep(SCENARIO["delay"])
     step = brain(len(outs), last)
     resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
@@ -123,7 +133,6 @@ async def responses(req):
             "id": f"fc{time.time_ns()}",
             "call_id": f"call{time.time_ns()}",
             "name": step[0],
-            "namespace": "research",
             "arguments": json.dumps(step[1], ensure_ascii=False),
             "status": "completed",
         }
@@ -173,7 +182,7 @@ async def chat(req):
                     "id": f"call{time.time_ns()}",
                     "type": "function",
                     "function": {
-                        "name": f"research__{step[0]}",
+                        "name": step[0],
                         "arguments": json.dumps(step[1], ensure_ascii=False),
                     },
                 }
@@ -302,6 +311,8 @@ def chat_cfg(port, wire, tool_call_timeout):
         "api_key": "x",
         "wire_api": wire,
         "models": [{"slug": "mock-ds"}],
+        # As on the server: code mode is run_code, which takes TypeScript.
+        "open_model": True,
     }
     return {
         "provider_settings": {"computer_use_runtime": "sandbox"},
@@ -370,18 +381,11 @@ async def main():
             priority_urls=["https://example.com/a"],
         )
         print(f"--- [{wire}] result ({time.monotonic() - t0:.1f}s):\n{out}\n---")
-        want = [
-            "research.apply_patch",
-            "research.deepseek_fetch",
-            "research.deepseek_search",
-            "research.tmp_list",
-            "research.tmp_read",
-        ]
-        if wire == "chat":
-            want = [w.replace(".", "__") for w in want]
         check(
-            all(t == want for t in LOG["llm_tools"]) and LOG["llm_tools"],
-            f"[{wire}] model sees only the 5 tools",
+            LOG["llm_tools"]
+            and all("run_code" in t for t in LOG["llm_tools"])
+            and not any("research" in x for t in LOG["llm_tools"] for x in t),
+            f"[{wire}] the research tools are reached from code only: {LOG['llm_tools'][:1]}",
         )
         searches = [b for k, b in LOG["ds"] if k == "search"]
         check(
@@ -396,20 +400,46 @@ async def main():
             fetches.count("https://example.com/a") == 1,
             f"[{wire}] page fetched once, re-read from cache ({fetches})",
         )
+        printed = next((o for o in LOG["tool_outputs"] if '{"saved"' in o), "")
+        try:
+            got = json.loads(
+                printed[printed.index('{"saved"') : printed.rindex("}") + 1]
+            )
+        except ValueError:
+            got = {}
+        print(f"[{wire}] program printed: {got or LOG['tool_outputs'][:2]}")
         check(
-            any("could not fetch" in o for o in LOG["tool_outputs"]),
-            f"[{wire}] blocked fetch explained",
+            got.get("saved") == ["pages/01-example.com.md", "search/01.md"]
+            and got.get("results") == 3
+            and got.get("content", 0) > 100
+            and got.get("cached") is True,
+            f"[{wire}] the program got JSON results, full text and saved paths",
         )
         check(
-            any("outside the task directory" in o for o in LOG["tool_outputs"]),
-            f"[{wire}] path escape refused",
+            "could not fetch" in str(got.get("blocked"))
+            and "outside the task directory" in str(got.get("escape")),
+            f"[{wire}] blocked fetch explained, path escape refused",
         )
         check(
-            any(
-                "search/01.md" in o and "pages/01-example.com.md" in o
-                for o in LOG["tool_outputs"]
-            ),
-            f"[{wire}] tmp_list shows saved files",
+            got.get("back", "").startswith("## Page A\nhttps://example.com/a")
+            and "materials.md" in got.get("files", []),
+            f"[{wire}] materials filed from code",
+        )
+        check(
+            got.get("patched") == ["A notes.md"]
+            and "outside the task directory" in str(got.get("refused")),
+            f"[{wire}] apply_patch from code, escape refused",
+        )
+        check(
+            len(LOG["tool_outputs"]) >= 2
+            and "Script completed" in LOG["tool_outputs"][1]
+            and "TypeScript check failed" not in LOG["tool_outputs"][1],
+            f"[{wire}] the prompt's example type-checks and runs: "
+            f"{LOG['tool_outputs'][1][:300] if len(LOG['tool_outputs']) > 1 else ''}",
+        )
+        check(
+            not any("页面内容页面内容页面内容页面内容" in i for i in LOG["llm_inputs"]),
+            f"[{wire}] the page text stays out of the model's context",
         )
         dirs = list(Path(SANDBOX_ROOT).iterdir())
         files = (
@@ -419,42 +449,29 @@ async def main():
             if dirs
             else []
         )
+        # The example program (second step) searches and fetches more.
         check(
-            files
-            == [
-                "final/draft.md",
+            {
+                "materials.md",
                 "notes.md",
                 "pages/01-example.com.md",
                 "report.md",
                 "search/01.md",
-            ],
+                "search/02.md",
+            }
+            <= set(files)
+            and not any("escape" in f for f in files),
             f"[{wire}] sandbox files {files}",
-        )
-        if dirs:
-            notes = (dirs[0] / "notes.md").read_text()
-            moved = (dirs[0] / "final/draft.md").read_text()
-            check(
-                notes == "# Notes\n- found [1]\n" and moved == "final\n",
-                f"[{wire}] patch results {notes!r} {moved!r}",
-            )
-        check(
-            any(
-                "could not locate hunk" in o and "nothing written" in o
-                for o in LOG["tool_outputs"]
-            ),
-            f"[{wire}] failed hunk reported, patch not applied",
-        )
-        check(
-            sum("outside the task directory" in o for o in LOG["tool_outputs"]) == 2,
-            f"[{wire}] read and patch outside the directory refused",
         )
         check(
             not (WORK / "sandbox_tmp" / "escape.txt").exists(),
             f"[{wire}] nothing written outside",
         )
         check(
-            out.startswith("结论：测试通过") and "/ds_research/" in out,
-            f"[{wire}] report + material path returned",
+            out.startswith("结论：测试通过")
+            and "/ds_research/" in out
+            and "materials.md" in out,
+            f"[{wire}] report + material paths returned",
         )
         engine = next(iter(CodexEngine._instances.values()))
         check(not engine.pumps, f"[{wire}] no thread pump left ({list(engine.pumps)})")

@@ -27,11 +27,6 @@
         "type": "int",
         "default": 8
     },
-    "fetch_window_chars": {
-        "description": "抓取网页时一次返回给子代理的字符数",
-        "type": "int",
-        "default": 6000
-    },
     "result_max_chars": {
         "description": "返回给主 agent 的报告最大字符数",
         "type": "int",

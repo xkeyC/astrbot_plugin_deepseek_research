@@ -20,22 +20,24 @@ AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工�
 子代理是同一个 Codex engine 上的一个 ephemeral 线程（不落 rollout），线程配置为：
 
 - `no_environment`，并关闭 `shell_tool`、`view_image`、`image_generation`、`web_search`、`memories`、`apps`、`agents`；
-- `model_tool_mode = direct`（不走 code mode）。
+- `model_tool_mode = code_mode_only`：子代理写程序调用工具（开源模型模式下是带 TypeScript 类型检查的 `run_code`，否则是 `exec`），不是每一步调一次工具。
 
-模型能用的只有以下工具：
+工具结果回到子代理的程序里，不进模型上下文：程序并行发起搜索和抓取，在代码里筛选、截取需要的段落，把资料写进文件，只把短摘录打印给模型。以前整页网页逐段读进上下文，token 消耗大，本地模型上尤其慢。
 
-- `research.deepseek_search`：Search API，支持 `site:`、`lang:`、`after:`、`before:` 等运算符，查询加运算符最长 128 字。`need_content` 时把结果正文存进沙箱；
-- `research.deepseek_fetch`：Fetch API，长网页按窗口分段读取，同一页只抓一次；
-- `research.tmp_read` / `tmp_list`：读取、列出沙箱里 `/tmp/ds_research/<task_id>/` 下的文件；
-- `research.apply_patch`：Codex 风格的 patch（`*** Add File` / `*** Update File` / `*** Move to` / `*** Delete File` / `@@` hunk），用来新建、修改、删除任务目录里的文件。解析和 hunk 匹配复用 AstrBot 内置 `apply_patch` 的实现。整个 patch 先全部算完再落盘：任何一个 hunk 匹配失败，或者任何一个路径越界，都一个文件也不写。
+程序里能用的只有以下工具，结果都是 JSON 文本（`JSON.parse(result.text)`，失败时是 `{ error }`）：
 
-路径先在宿主侧检查（拒绝 `..` 和目录外的绝对路径），落盘时再在沙箱内解析符号链接后检查一次，越界直接拒绝。
+- `research__deepseek_search`：Search API，支持 `site:`、`lang:`、`after:`、`before:` 等运算符，查询加运算符最长 128 字。返回 `{ query, saved, results: [{ n, title, url, site, date, summary, content }] }`，正文同时存进沙箱；
+- `research__deepseek_fetch`：Fetch API，返回 `{ title, url, chars, saved, content }`，`content` 是整页（最长 30 万字），同一页只抓一次；
+- `research__tmp_write` / `tmp_read` / `tmp_list`：写、读、列出沙箱里 `/tmp/ds_research/<task_id>/` 下的文件。子代理用 `tmp_write` 从代码里写 `materials.md`（按来源整理的资料摘录），资料由程序从结果里截取，不靠模型复述。
+- `research__apply_patch`：Codex 风格的 patch（`*** Add File` / `*** Update File` / `*** Move to` / `*** Delete File` / `@@` hunk），用来改笔记等文件。解析和 hunk 匹配复用 AstrBot 内置 `apply_patch` 的实现；整个 patch 先全部算完再落盘，任何一个 hunk 匹配失败或路径越界都一个文件也不写。
 
-在 codex 348075fad 上用 Responses 和 chat 两种 wire 实测过：模型收到的 tools 只有上面 5 个。`view_image` 即使在 `no_environment` 下也要单独关掉才会消失。
+路径在沙箱内解析符号链接后检查，越界直接拒绝。
 
-沙箱文件通过 Shipyard 的 Python 执行器读写，因为它的文件 API 只能访问 `/workspace`。执行的代码由插件固定写死，请求内容用 base64 传入，模型拿不到执行能力。会话没有启用 sandbox 运行时的话，不提供文件工具（`tmp_*`、`apply_patch`），网页只在内存里分段读。
+`view_image` 即使在 `no_environment` 下也要单独关掉才会消失。
 
-材料目录：`report.md`（完整报告）、`search/NN.md`（第 N 次搜索的结果正文）、`pages/NN-<host>.md`（抓取的网页）。主 agent 可以用自己的沙箱工具读这些文件。
+沙箱文件通过 Shipyard 的 Python 执行器读写，因为它的文件 API 只能访问 `/workspace`。执行的代码由插件固定写死，请求内容用 base64 传入，模型拿不到执行能力。会话没有启用 sandbox 运行时的话，不提供文件工具（`tmp_*`），结果只在程序里。
+
+材料目录：`report.md`（完整报告）、`materials.md`（子代理整理的资料摘录）、`search/NN.md`（第 N 次搜索的结果正文）、`pages/NN-<host>.md`（抓取的网页）。主 agent 可以用自己的沙箱工具读这些文件。
 
 ## 时间预算
 
@@ -45,6 +47,8 @@ AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工�
 - **其他运行**（较旧的 AstrBot、别的插件在 `tool_loop_agent` 里调用、后台任务）：工具会在 `tool_call_timeout` 时被取消，报告会丢失。这时预算是 `min(time_budget_s, tool_call_timeout - 15)`。
 
 插件在运行时从工具的 run context 读 `tool_tasks` 和 `tool_call_timeout` 来判断，所以工具是用 `FunctionTool` 子类注册的，没有用 `llm_tool` 装饰器。
+
+工具任务没人 `wait` 时，结束后结果会作为一条消息回到对话（需要 AstrBotX 65ef608a8 及以后）。
 
 预算用掉 75% 后，插件会向子线程 steer 一条"停止调用工具、立即写报告"的消息，之后的工具调用一律拒绝。到 100% 还没写完就 interrupt，只返回已有的部分结果（执行过的搜索和读过的网页）。工具调用次数超过 `max_tool_calls` 后同样拒绝。
 

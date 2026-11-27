@@ -180,7 +180,6 @@ class DeepSeekResearchPlugin(Star):
             budget_s=budget,
             max_tool_calls=int(self.config.get("max_tool_calls") or 30),
             search_count=int(self.config.get("search_count") or 8),
-            fetch_window=int(self.config.get("fetch_window_chars") or 6000),
             report_chars=int(self.config.get("result_max_chars") or 8000),
             after=after,
             before=before,
