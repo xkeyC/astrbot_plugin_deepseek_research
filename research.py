@@ -307,7 +307,8 @@ del _dsr_op, _dsr_out
 def parse_time_range(text: str, today: date) -> tuple[str, str]:
     """Turn a time range into DeepSeek's ``after:`` / ``before:`` values.
 
-    Accepts ``7d`` / ``2w`` / ``3m`` / ``1y`` (that long until today), a date
+    Accepts ``7d`` / ``2w`` / ``3m`` / ``1y`` (that long until today; also
+    ``day`` / ``week`` / ``month`` / ``year``, optionally ``past``-prefixed), a date
     (``2025``, ``2025-06``, ``2025-06-01``; from then on) or ``A..B`` with
     either side left open.
 
@@ -321,9 +322,19 @@ def parse_time_range(text: str, today: date) -> tuple[str, str]:
     Raises:
         ValueError: The text is none of the forms above.
     """
-    t = text.strip().lower().replace(" ", "")
+    t = text.strip().lower().replace(" ", "").replace("_", "")
     if not t:
         return "", ""
+    # Words models write for a recent window.
+    t = re.sub(r"^(past|last)", "", t) or t
+    t = {
+        "day": "1d",
+        "today": "1d",
+        "24h": "1d",
+        "week": "7d",
+        "month": "30d",
+        "year": "365d",
+    }.get(t, t)
     if m := re.fullmatch(r"(\d+)([dwmy])", t):
         days = int(m.group(1)) * {"d": 1, "w": 7, "m": 30, "y": 365}[m.group(2)]
         return (today - timedelta(days=days)).isoformat(), ""

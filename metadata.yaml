@@ -1,5 +1,5 @@
 name: astrbot_plugin_deepseek_research
-version: 0.4.4
+version: 0.4.5
 author: xkeyC
 description: 受限 Codex 子代理 + DeepSeek 搜索/抓取 API 的联网调研工具（AstrBotX）
 url: https://github.com/xkeyC/astrbot_plugin_deepseek_research

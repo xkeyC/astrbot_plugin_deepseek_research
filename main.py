@@ -58,7 +58,7 @@ class DeepSeekResearchTool(FunctionTool):
                 "time_range": {
                     "type": "string",
                     "description": "Optional. Publication time to search: 7d / 2w / "
-                    "3m / 1y (until today), a date such as 2025 or 2025-06-01 (from "
+                    "3m / 1y or day / week / month / year (until today), a date such as 2025 or 2025-06-01 (from "
                     "then on), or A..B such as 2025-01-01..2025-06-30.",
                 },
                 "priority_urls": {
