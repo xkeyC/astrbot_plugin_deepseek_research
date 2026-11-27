@@ -259,7 +259,7 @@ try:
     _dsr_out = _dsr_op(_json.loads(_b64.b64decode("%s").decode("utf-8")))
 except Exception as _e:
     _dsr_out = {"ok": False, "error": repr(_e)}
-print("@@DSR@@" + _json.dumps(_dsr_out, ensure_ascii=False))
+print("@@DSR@@%s@@" + _json.dumps(_dsr_out, ensure_ascii=False))
 del _dsr_op, _dsr_out
 """
 
@@ -269,6 +269,10 @@ del _dsr_op, _dsr_out
         self._get_booter = get_booter
         self._booter = None
         self.base = base
+        # The subagent's program saves and reads in parallel; the sandbox's
+        # Python executor mixed up concurrent runs' output (ship before the
+        # IOPub fix), so ops go one at a time, each output tagged with a nonce.
+        self._lock = asyncio.Lock()
 
     async def op(self, op: str, path: str = ".", **fields: Any) -> JsonObject:
         if self._booter is None:
@@ -276,13 +280,24 @@ del _dsr_op, _dsr_out
         payload = json.dumps(
             {"op": op, "base": self.base, "path": path, **fields}, ensure_ascii=False
         )
-        code = self.CODE % base64.b64encode(payload.encode("utf-8")).decode("ascii")
-        result = await self._booter.python.exec(code, timeout=60)
-        output = str(result.get("output") or "")
-        for line in reversed(output.splitlines()):
-            if line.startswith(self.MARK):
-                return json.loads(line[len(self.MARK) :])
-        error = str(result.get("error") or "") or output[-300:] or "no output"
+        encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+        error = "no output"
+        # Another run's output in the same kernel (the chat's own tools) can
+        # still take this one's: one retry.
+        for _ in range(2):
+            nonce = uuid.uuid4().hex[:12]
+            mark = f"{self.MARK}{nonce}@@"
+            async with self._lock:
+                result = await self._booter.python.exec(
+                    self.CODE % (encoded, nonce), timeout=60
+                )
+            output = str(result.get("output") or "")
+            for line in reversed(output.splitlines()):
+                if line.startswith(mark):
+                    return json.loads(line[len(mark) :])
+            error = str(result.get("error") or "") or "no output"
+            if error != "no output":
+                break
         return {"ok": False, "error": f"sandbox: {error}"}
 
 
