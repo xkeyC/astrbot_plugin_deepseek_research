@@ -3,7 +3,6 @@ Search and Fetch APIs."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -12,6 +11,7 @@ from astrbot.api import FunctionTool, logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 
+from .model_select import pick_subagent_model
 from .research import (
     SANDBOX_ROOT,
     DeepSeekTools,
@@ -88,16 +88,11 @@ class DeepSeekResearchTool(FunctionTool):
         )
 
 
-def _provider_id(raw: object) -> str:
-    # As the Codex runner names WebUI providers (model_provider_overrides).
-    return re.sub(r"[^A-Za-z0-9_-]", "_", str(raw or "").strip())
-
-
 @register(
     "deepseek_research",
     "xkeyC",
     "Web research by a restricted Codex subagent on DeepSeek Search & Fetch",
-    "0.1.0",
+    "0.2.0",
 )
 class DeepSeekResearchPlugin(Star):
     def __init__(self, context: Context, config: dict) -> None:
@@ -114,61 +109,9 @@ class DeepSeekResearchPlugin(Star):
         await self.client.close()
 
     def _subagent_model(self, runner_cfg: dict) -> tuple[str | None, str | None]:
-        """The Codex provider and model the subagent runs on.
-
-        The plugin setting names one of the runner's WebUI providers; unset,
-        the first provider on api.deepseek.com is taken, else the runner's own
-        provider and model.
-
-        Returns:
-            ``(provider id, model)``; None leaves Codex's default.
-
-        Raises:
-            ValueError: The setting names no provider, or a provider with no
-                model to use.
-        """
-        providers = [
-            p for p in runner_cfg.get("model_providers") or [] if isinstance(p, dict)
-        ]
-        wanted = _provider_id(self.config.get("subagent_provider"))
-        model = str(self.config.get("subagent_model") or "").strip()
-        if wanted:
-            match = next(
-                (
-                    p
-                    for p in providers
-                    if wanted in (_provider_id(p.get("id")), str(p.get("name") or ""))
-                ),
-                None,
-            )
-            if match is None:
-                if wanted != _provider_id(runner_cfg.get("model_provider")):
-                    raise ValueError(
-                        f"子代理 provider {wanted!r} 不在 Codex runner 的 providers 里"
-                    )
-                return wanted, model or str(runner_cfg.get("model") or "") or None
-        else:
-            match = next(
-                (p for p in providers if "api.deepseek.com" in str(p.get("base_url"))),
-                None,
-            )
-            if match is None:
-                return (
-                    str(runner_cfg.get("model_provider") or "") or None,
-                    model or str(runner_cfg.get("model") or "") or None,
-                )
-        if not model:
-            slugs = [
-                str(m.get("slug") or "").strip()
-                for m in match.get("models") or []
-                if isinstance(m, dict)
-            ]
-            model = next((s for s in slugs if s), "")
-        if not model:
-            raise ValueError(
-                f"provider {match.get('id')!r} 没有列出模型，请在插件配置里填 subagent_model"
-            )
-        return _provider_id(match.get("id")), model
+        """The Codex provider and model the subagent runs on: see
+        ``model_select.pick_subagent_model``."""
+        return pick_subagent_model(self.config, runner_cfg)
 
     async def research(
         self,
