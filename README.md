@@ -54,15 +54,7 @@ AstrBotX（Codex runner）插件：给主 agent 一个 `deepseek_research` 工�
 
 ## 模型
 
-`subagent_model_source` 选子代理跑在哪个模型上：
-
-| 取值 | provider | 模型 |
-| --- | --- | --- |
-| `auto`（默认） | `subagent_provider`；留空时优先用 `base_url` 含 `api.deepseek.com` 的 provider，没有的话用 runner 当前的 provider 和模型 | `subagent_model` |
-| `deepseek` | `base_url` 含 `api.deepseek.com` 的 provider | `subagent_model` |
-| `local` | `local_provider` 指定的本地 provider，例如局域网里的 [halogen-flash-server](https://github.com/peonist-ai/halogen-flash-server) | `local_model` |
-
-provider 都填 Codex runner 里 WebUI 管理的 provider ID（或名称）；模型留空时取该 provider 列出的第一个模型。推理强度统一用 `subagent_reasoning_effort`（留空用模型的默认值）。Search / Fetch 不管子代理用哪个模型，始终走 DeepSeek 官方 API。
+子代理跑在当前对话 Codex runner 的 provider 和模型上（例如 395 上的 halogen），推理强度也跟随 runner；`subagent_reasoning_effort` 填了就覆盖推理强度。DeepSeek 只作为搜索引擎：插件只调用它的 Search / Fetch API，不用 DeepSeek 的模型。
 
 子代理和主会话共用同一个 Codex engine（用同一份 runner 配置），所以不会触发 engine 重启。
 

@@ -2,49 +2,14 @@
     "deepseek_api_key": {
         "description": "DeepSeek 官方 API Key",
         "type": "string",
-        "hint": "用于 Search / Fetch API（各 $0.75 / 千次成功请求），必填",
+        "hint": "只用于 Search / Fetch API（各 $0.75 / 千次成功请求），必填；子代理的模型是当前对话 Codex runner 的模型，不走 DeepSeek",
         "obvious_hint": true
-    },
-    "subagent_model_source": {
-        "description": "子代理模型来源",
-        "type": "string",
-        "default": "auto",
-        "options": [
-            "auto",
-            "deepseek",
-            "local"
-        ],
-        "hint": "auto：按下面的 subagent_provider，留空则用 base_url 为 api.deepseek.com 的 provider，再没有就用 runner 当前的；deepseek：DeepSeek 官方 API 的 provider + subagent_model；local：local_provider 指定的本地模型（如 395 上的 halogen）+ local_model"
-    },
-    "subagent_provider": {
-        "description": "子代理使用的 Codex provider",
-        "type": "string",
-        "default": "",
-        "hint": "子代理模型来源为 auto 时用。填 Codex runner 里 WebUI 管理的 provider ID（或名称）。留空：优先用 base_url 为 api.deepseek.com 的 provider，没有则用 runner 当前的 provider 和模型"
-    },
-    "subagent_model": {
-        "description": "子代理模型",
-        "type": "string",
-        "default": "",
-        "hint": "auto / deepseek 时用。留空：用所选 provider 列出的第一个模型"
-    },
-    "local_provider": {
-        "description": "本地模型的 Codex provider",
-        "type": "string",
-        "default": "",
-        "hint": "子代理模型来源选 local 时用。填 Codex runner 里 WebUI 管理的 provider ID（或名称），如 halogen-395"
-    },
-    "local_model": {
-        "description": "本地模型",
-        "type": "string",
-        "default": "",
-        "hint": "留空：用 local_provider 列出的第一个模型"
     },
     "subagent_reasoning_effort": {
         "description": "子代理推理强度",
         "type": "string",
         "default": "",
-        "hint": "留空用模型默认值；如 low / medium / high"
+        "hint": "留空：跟随当前对话 Codex runner 的推理强度；如 low / medium / high"
     },
     "time_budget_s": {
         "description": "单次调研时间预算（秒）",

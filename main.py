@@ -92,7 +92,7 @@ class DeepSeekResearchTool(FunctionTool):
     "deepseek_research",
     "xkeyC",
     "Web research by a restricted Codex subagent on DeepSeek Search & Fetch",
-    "0.2.0",
+    "0.3.0",
 )
 class DeepSeekResearchPlugin(Star):
     def __init__(self, context: Context, config: dict) -> None:
@@ -107,11 +107,6 @@ class DeepSeekResearchPlugin(Star):
 
     async def terminate(self) -> None:
         await self.client.close()
-
-    def _subagent_model(self, runner_cfg: dict) -> tuple[str | None, str | None]:
-        """The Codex provider and model the subagent runs on: see
-        ``model_select.pick_subagent_model``."""
-        return pick_subagent_model(self.config, runner_cfg)
 
     async def research(
         self,
@@ -156,10 +151,8 @@ class DeepSeekResearchPlugin(Star):
         chat_cfg = self.context.get_config(umo=umo)
         runner = normalize_agent_runner(chat_cfg.get("agent_runner"))
         runner_cfg = runner["config"]
-        try:
-            provider, model = self._subagent_model(runner_cfg)
-        except ValueError as e:
-            return f"deepseek_research 配置有误：{e}"
+        # The chat's own model; DeepSeek is only the search engine.
+        provider, model, effort = pick_subagent_model(self.config, runner_cfg)
         budget = float(self.config.get("time_budget_s") or 600)
         if cancel_after_s is not None:
             # Cancelled there, the report would be lost: wrap up before.
@@ -183,7 +176,7 @@ class DeepSeekResearchPlugin(Star):
             task_id=task_id,
             model_provider=provider,
             model=model,
-            reasoning_effort=str(self.config.get("subagent_reasoning_effort") or ""),
+            reasoning_effort=effort,
             budget_s=budget,
             max_tool_calls=int(self.config.get("max_tool_calls") or 30),
             search_count=int(self.config.get("search_count") or 8),
@@ -209,11 +202,12 @@ class DeepSeekResearchPlugin(Star):
             f"Budget: about {int(budget)} seconds and {task.max_tool_calls} tool calls."
         )
         logger.info(
-            "deepseek_research %s for %s: provider=%s model=%s budget=%ss sandbox=%s",
+            "deepseek_research %s for %s: provider=%s model=%s effort=%s budget=%ss sandbox=%s",
             task_id,
             umo,
             provider,
             model,
+            effort or "default",
             int(budget),
             sandbox is not None,
         )
